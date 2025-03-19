@@ -237,31 +237,36 @@
             const data = imageData.data;
             let svg = `<svg width="${canvas.width}" height="${canvas.height}" xmlns="http://www.w3.org/2000/svg">`;
             const step = detail;
+            const usedColors = colors.length ? colors : [getDominantColor(imageData)];
+            const mask = new Array(canvas.width * canvas.height).fill(false);
 
             if (mode === 'silhouette') {
                 svg += `<rect x="0" y="0" width="${canvas.width}" height="${canvas.height}" fill="white"/>`;
                 for (let y = 0; y < canvas.height; y += step) {
                     for (let x = 0; x < canvas.width; x += step) {
                         const i = (y * canvas.width + x) * 4;
-                        if (data[i + 3] > 0 && (data[i] + data[i + 1] + data[i + 2]) / 3 < 200) {
+                        const index = y * canvas.width + x;
+                        if (!mask[index] && data[i + 3] > 0 && (data[i] + data[i + 1] + data[i + 2]) / 3 < 200) {
                             svg += `<rect x="${x}" y="${y}" width="${step}" height="${step}" fill="black"/>`;
+                            mask[index] = true;
                         }
                     }
                 }
             } else if (mode === 'flat' || mode === 'gradient') {
-                const usedColors = colors.length ? colors : [getDominantColor(imageData)];
                 const colorRegions = {};
                 usedColors.forEach(color => colorRegions[color] = []);
 
                 for (let y = 0; y < canvas.height; y += step) {
                     for (let x = 0; x < canvas.width; x += step) {
                         const i = (y * canvas.width + x) * 4;
-                        if (data[i + 3] > 0) {
+                        const index = y * canvas.width + x;
+                        if (!mask[index] && data[i + 3] > 0) {
                             const pixelColor = `rgb(${data[i]}, ${data[i + 1]}, ${data[i + 2]})`;
                             const closestColor = usedColors.reduce((prev, curr) => 
                                 colorDistance(pixelColor, prev) < colorDistance(pixelColor, curr) ? prev : curr
                             );
                             colorRegions[closestColor].push({ x, y });
+                            mask[index] = true;
                         }
                     }
                 }
