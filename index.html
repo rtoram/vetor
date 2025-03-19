@@ -231,52 +231,84 @@
             };
         }
 
-        // Gerar SVG
+        // Gerar SVG com rastreamento de contornos
         function generateSVG(mode, detail) {
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const data = imageData.data;
             let svg = `<svg width="${canvas.width}" height="${canvas.height}" xmlns="http://www.w3.org/2000/svg">`;
-            const step = detail;
             const usedColors = colors.length ? colors : [getDominantColor(imageData)];
-            const mask = new Array(canvas.width * canvas.height).fill(false);
+            const visited = new Array(canvas.width * canvas.height).fill(false);
+            const tolerance = detail * 5; // Ajusta a simplificação com base no slider
+
+            // Converte para escala de cinza para detecção de bordas
+            const grayData = new Uint8ClampedArray(canvas.width * canvas.height);
+            for (let i = 0; i < data.length; i += 4) {
+                grayData[i / 4] = 0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2];
+            }
+
+            function traceContour(startX, startY, color) {
+                const points = [];
+                let x = startX, y = startY;
+                const directions = [[0, 1], [1, 1], [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1]];
+                let dirIndex = 0;
+
+                do {
+                    points.push({ x, y });
+                    visited[y * canvas.width + x] = true;
+                    let found = false;
+                    for (let i = 0; i < 8; i++) {
+                        const nextDir = (dirIndex + i + 6) % 8; // Começa olhando para trás
+                        const [dx, dy] = directions[nextDir];
+                        const nx = x + dx, ny = y + dy;
+                        if (nx >= 0 && nx < canvas.width && ny >= 0 && ny < canvas.height) {
+                            const index = (ny * canvas.width + nx) * 4;
+                            const [r, g, b] = parseRGB(color);
+                            if (!visited[ny * canvas.width + nx] && data[index + 3] > 0 &&
+                                Math.abs(data[index] - r) < tolerance &&
+                                Math.abs(data[index + 1] - g) < tolerance &&
+                                Math.abs(data[index + 2] - b) < tolerance) {
+                                x = nx;
+                                y = ny;
+                                dirIndex = nextDir;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!found) break;
+                } while (x !== startX || y !== startY);
+
+                // Simplificar pontos
+                const simplifiedPoints = simplifyPoints(points, detail);
+                return simplifiedPoints.length > 2 ? `M${simplifiedPoints.map(p => `${p.x},${p.y}`).join(' L')} Z` : '';
+            }
 
             if (mode === 'silhouette') {
                 svg += `<rect x="0" y="0" width="${canvas.width}" height="${canvas.height}" fill="white"/>`;
-                for (let y = 0; y < canvas.height; y += step) {
-                    for (let x = 0; x < canvas.width; x += step) {
+                for (let y = 0; y < canvas.height; y++) {
+                    for (let x = 0; x < canvas.width; x++) {
                         const i = (y * canvas.width + x) * 4;
-                        const index = y * canvas.width + x;
-                        if (!mask[index] && data[i + 3] > 0 && (data[i] + data[i + 1] + data[i + 2]) / 3 < 200) {
-                            svg += `<rect x="${x}" y="${y}" width="${step}" height="${step}" fill="black"/>`;
-                            mask[index] = true;
+                        if (!visited[y * canvas.width + x] && data[i + 3] > 0 && grayData[y * canvas.width + x] < 200) {
+                            const path = traceContour(x, y, 'rgb(0, 0, 0)');
+                            if (path) svg += `<path d="${path}" fill="black"/>`;
                         }
                     }
                 }
             } else if (mode === 'flat' || mode === 'gradient') {
-                const colorRegions = {};
-                usedColors.forEach(color => colorRegions[color] = []);
-
-                for (let y = 0; y < canvas.height; y += step) {
-                    for (let x = 0; x < canvas.width; x += step) {
-                        const i = (y * canvas.width + x) * 4;
-                        const index = y * canvas.width + x;
-                        if (!mask[index] && data[i + 3] > 0) {
-                            const pixelColor = `rgb(${data[i]}, ${data[i + 1]}, ${data[i + 2]})`;
-                            const closestColor = usedColors.reduce((prev, curr) => 
-                                colorDistance(pixelColor, prev) < colorDistance(pixelColor, curr) ? prev : curr
-                            );
-                            colorRegions[closestColor].push({ x, y });
-                            mask[index] = true;
+                usedColors.forEach(color => {
+                    for (let y = 0; y < canvas.height; y++) {
+                        for (let x = 0; x < canvas.width; x++) {
+                            const i = (y * canvas.width + x) * 4;
+                            if (!visited[y * canvas.width + x] && data[i + 3] > 0) {
+                                const pixelColor = `rgb(${data[i]}, ${data[i + 1]}, ${data[i + 2]})`;
+                                if (colorDistance(pixelColor, color) < tolerance) {
+                                    const path = traceContour(x, y, color);
+                                    if (path) svg += `<path d="${path}" fill="${color}"/>`;
+                                }
+                            }
                         }
                     }
-                }
-
-                for (const color in colorRegions) {
-                    const regions = colorRegions[color];
-                    regions.forEach(({ x, y }) => {
-                        svg += `<rect x="${x}" y="${y}" width="${step}" height="${step}" fill="${color}"/>`;
-                    });
-                }
+                });
 
                 if (mode === 'gradient' && usedColors.length > 1) {
                     svg += `<defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:${usedColors[0]}"/><stop offset="100%" style="stop-color:${usedColors[1]}"/></linearGradient></defs>`;
@@ -285,6 +317,18 @@
             }
             svg += `</svg>`;
             return svg;
+        }
+
+        // Simplificar pontos (algoritmo básico de redução)
+        function simplifyPoints(points, detail) {
+            if (points.length <= 2) return points;
+            const simplified = [points[0]];
+            const step = Math.max(1, Math.floor(detail));
+            for (let i = step; i < points.length - step; i += step) {
+                simplified.push(points[i]);
+            }
+            simplified.push(points[points.length - 1]);
+            return simplified;
         }
 
         // Funções auxiliares
