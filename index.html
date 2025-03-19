@@ -1,416 +1,85 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <title>Vetorização de Imagens</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 20px;
-            background-color: #f0f0f0;
-        }
-        #canvas, #previewCanvas {
-            border: 1px solid #000;
-            margin: 10px;
-            max-width: 100%;
-        }
-        button {
-            padding: 10px 20px;
-            margin: 5px;
-            background-color: #007BFF;
-            color: white;
-            border: none;
-            cursor: pointer;
-            border-radius: 5px;
-        }
-        button:hover {
-            background-color: #0056b3;
-        }
-        #upload, select, input[type="range"] {
-            margin: 10px;
-        }
-        label {
-            margin-right: 10px;
-        }
-        #colorList {
-            margin: 10px;
-            max-height: 100px;
-            overflow-y: auto;
-        }
-        .colorBox {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            margin: 5px;
-            cursor: pointer;
-        }
-    </style>
-</head>
-<body>
-    <h1>Vetorização de Imagens</h1>
-    <input type="file" id="upload" accept="image/*">
-    <br>
-    <canvas id="canvas"></canvas>
-    <canvas id="previewCanvas" width="200" height="200"></canvas>
-    <br>
-    <button onclick="enableEyedropper()">Ativar Conta-gotas</button>
-    <button onclick="detectColors()">Detectar Cores Automaticamente</button>
-    <div id="colorList"></div>
-    <br>
-    <select id="vectorMode">
-        <option value="flat">Cores Planas</option>
-        <option value="silhouette">Silhueta</option>
-        <option value="gradient">Gradientes</option>
-    </select>
-    <label for="detailLevel">Nível de Detalhe:</label>
-    <input type="range" id="detailLevel" min="1" max="20" value="5">
-    <br>
-    <button onclick="removeBackground()">Remover Fundo</button>
-    <button onclick="vectorizeImage()">Vetorizar</button>
-    <button onclick="undoAction()">Desfazer</button>
-    <br>
-    <button onclick="downloadSVG()">Baixar SVG</button>
-    <button onclick="downloadPNG()">Baixar PNG</button>
+function generateSVG(mode, detail) {
+    return new Promise((resolve) => {
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let src = cv.matFromImageData(imageData);
+        let gray = new cv.Mat();
+        let edges = new cv.Mat();
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
 
-    <script>
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        const previewCanvas = document.getElementById('previewCanvas');
-        const previewCtx = previewCanvas.getContext('2d');
-        let originalImage = new Image();
-        let isImageLoaded = false;
-        let colors = [];
-        let history = [];
-        let isEyedropperActive = false;
+        // Converter para escala de cinza e detectar bordas
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.Canny(gray, edges, 50, 150);
 
-        // Carregar a imagem
-        document.getElementById('upload').addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                originalImage.src = event.target.result;
-                originalImage.onload = function() {
-                    canvas.width = originalImage.width;
-                    canvas.height = originalImage.height;
-                    ctx.drawImage(originalImage, 0, 0);
-                    isImageLoaded = true;
-                    updatePreview();
-                };
-            };
-            reader.readAsDataURL(file);
-        });
+        // Encontrar contornos
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-        // Ativar conta-gotas
-        function enableEyedropper() {
-            if (!isImageLoaded) {
-                alert("Carregue uma imagem primeiro!");
-                return;
-            }
-            isEyedropperActive = true;
-            canvas.style.cursor = 'crosshair';
-            canvas.addEventListener('click', pickColor);
-        }
+        let svg = `<svg width="${canvas.width}" height="${canvas.height}" xmlns="http://www.w3.org/2000/svg">`;
+        const usedColors = colors.length ? colors : [getDominantColor(imageData)];
+        const tolerance = detail * 5;
 
-        // Selecionar cor com conta-gotas
-        function pickColor(event) {
-            if (!isEyedropperActive) return;
-            const rect = canvas.getBoundingClientRect();
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
-            const pixel = ctx.getImageData(x, y, 1, 1).data;
-            const color = `rgb(${pixel[0]}, ${pixel[1]}, ${pixel[2]})`;
-            if (!colors.includes(color)) {
-                colors.push(color);
-                updateColorList();
-            }
-            isEyedropperActive = false;
-            canvas.style.cursor = 'default';
-            canvas.removeEventListener('click', pickColor);
-        }
-
-        // Detectar cores automaticamente
-        function detectColors() {
-            if (!isImageLoaded) {
-                alert("Carregue uma imagem primeiro!");
-                return;
-            }
-            colors = [];
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-            const colorMap = {};
-            for (let i = 0; i < imageData.length; i += 40) {
-                const r = imageData[i];
-                const g = imageData[i + 1];
-                const b = imageData[i + 2];
-                const key = `${r},${g},${b}`;
-                colorMap[key] = (colorMap[key] || 0) + 1;
-            }
-            const sortedColors = Object.entries(colorMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
-            colors = sortedColors.map(([key]) => `rgb(${key})`);
-            updateColorList();
-        }
-
-        // Atualizar lista de cores e aplicar mudanças na imagem
-        function updateColorList() {
-            const colorList = document.getElementById('colorList');
-            colorList.innerHTML = '';
-            colors.forEach((color, index) => {
-                const div = document.createElement('div');
-                div.className = 'colorBox';
-                div.style.backgroundColor = color;
-                div.onclick = () => {
-                    const newColor = prompt("Digite uma nova cor (ex.: #FF0000 ou rgb(255, 0, 0))", color);
-                    if (newColor) {
-                        replaceColor(color, newColor);
-                        colors[index] = newColor;
-                        updateColorList();
-                    }
-                };
-                colorList.appendChild(div);
-            });
-            updatePreview();
-        }
-
-        // Substituir uma cor na imagem
-        function replaceColor(oldColor, newColor) {
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const data = imageData.data;
-            const [oldR, oldG, oldB] = parseRGB(oldColor);
-            const [newR, newG, newB] = parseRGB(newColor);
-            for (let i = 0; i < data.length; i += 4) {
-                if (Math.abs(data[i] - oldR) < 20 && Math.abs(data[i + 1] - oldG) < 20 && Math.abs(data[i + 2] - oldB) < 20) {
-                    data[i] = newR;
-                    data[i + 1] = newG;
-                    data[i + 2] = newB;
+        if (mode === 'silhouette') {
+            svg += `<rect x="0" y="0" width="${canvas.width}" height="${canvas.height}" fill="white"/>`;
+            for (let i = 0; i < contours.size(); i++) {
+                const contour = contours.get(i);
+                const points = contour.data32S;
+                let path = 'M';
+                for (let j = 0; j < points.length; j += 2) {
+                    path += `${points[j]},${points[j + 1]} ${j === 0 ? '' : 'L'}`;
                 }
+                path += 'Z';
+                svg += `<path d="${path}" fill="black"/>`;
             }
-            ctx.putImageData(imageData, 0, 0);
-            updatePreview();
-        }
-
-        // Remover fundo
-        function removeBackground() {
-            if (!isImageLoaded) {
-                alert("Carregue uma imagem primeiro!");
-                return;
-            }
-            saveToHistory();
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        } else if (mode === 'flat' || mode === 'gradient') {
             const data = imageData.data;
-            const bgColor = colors.length ? colors[0] : getDominantEdgeColor(imageData);
-            const [bgR, bgG, bgB] = parseRGB(bgColor);
-            for (let i = 0; i < data.length; i += 4) {
-                if (Math.abs(data[i] - bgR) < 30 && Math.abs(data[i + 1] - bgG) < 30 && Math.abs(data[i + 2] - bgB) < 30) {
-                    data[i + 3] = 0;
+            for (let i = 0; i < contours.size(); i++) {
+                const contour = contours.get(i);
+                const points = contour.data32S;
+                const x = points[0], y = points[1];
+                const pixelIdx = (y * canvas.width + x) * 4;
+                const pixelColor = `rgb(${data[pixelIdx]},${data[pixelIdx + 1]},${data[pixelIdx + 2]})`;
+                const closestColor = usedColors.reduce((prev, curr) =>
+                    colorDistance(pixelColor, prev) < colorDistance(pixelColor, curr) ? prev : curr
+                );
+                let path = 'M';
+                for (let j = 0; j < points.length; j += 2) {
+                    path += `${points[j]},${points[j + 1]} ${j === 0 ? '' : 'L'}`;
                 }
+                path += 'Z';
+                svg += `<path d="${path}" fill="${closestColor}"/>`;
             }
-            ctx.putImageData(imageData, 0, 0);
-            updatePreview();
-        }
-
-        // Vetorizar imagem
-        function vectorizeImage() {
-            if (!isImageLoaded) {
-                alert("Carregue uma imagem primeiro!");
-                return;
+            if (mode === 'gradient' && usedColors.length > 1) {
+                svg += `<defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:${usedColors[0]}"/><stop offset="100%" style="stop-color:${usedColors[1]}"/></linearGradient></defs>`;
+                svg += `<rect x="0" y="0" width="${canvas.width}" height="${canvas.height}" fill="url(#grad)"/>`;
             }
-            saveToHistory();
-            const mode = document.getElementById('vectorMode').value;
-            const detail = parseInt(document.getElementById('detailLevel').value);
-            const svg = generateSVG(mode, detail);
-            const blob = new Blob([svg], { type: 'image/svg+xml' });
-            const url = URL.createObjectURL(blob);
-            document.vectorSvgUrl = url;
-            const img = new Image();
-            img.src = url;
-            img.onload = () => {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                updatePreview();
-            };
         }
 
-        // Gerar SVG com rastreamento de contornos
-        function generateSVG(mode, detail) {
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const data = imageData.data;
-            let svg = `<svg width="${canvas.width}" height="${canvas.height}" xmlns="http://www.w3.org/2000/svg">`;
-            const usedColors = colors.length ? colors : [getDominantColor(imageData)];
-            const visited = new Array(canvas.width * canvas.height).fill(false);
-            const tolerance = detail * 5; // Ajusta a simplificação com base no slider
+        svg += `</svg>`;
+        resolve(svg);
 
-            // Converte para escala de cinza para detecção de bordas
-            const grayData = new Uint8ClampedArray(canvas.width * canvas.height);
-            for (let i = 0; i < data.length; i += 4) {
-                grayData[i / 4] = 0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2];
-            }
+        // Liberar memória
+        src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+    });
+}
 
-            function traceContour(startX, startY, color) {
-                const points = [];
-                let x = startX, y = startY;
-                const directions = [[0, 1], [1, 1], [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1]];
-                let dirIndex = 0;
-
-                do {
-                    points.push({ x, y });
-                    visited[y * canvas.width + x] = true;
-                    let found = false;
-                    for (let i = 0; i < 8; i++) {
-                        const nextDir = (dirIndex + i + 6) % 8; // Começa olhando para trás
-                        const [dx, dy] = directions[nextDir];
-                        const nx = x + dx, ny = y + dy;
-                        if (nx >= 0 && nx < canvas.width && ny >= 0 && ny < canvas.height) {
-                            const index = (ny * canvas.width + nx) * 4;
-                            const [r, g, b] = parseRGB(color);
-                            if (!visited[ny * canvas.width + nx] && data[index + 3] > 0 &&
-                                Math.abs(data[index] - r) < tolerance &&
-                                Math.abs(data[index + 1] - g) < tolerance &&
-                                Math.abs(data[index + 2] - b) < tolerance) {
-                                x = nx;
-                                y = ny;
-                                dirIndex = nextDir;
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (!found) break;
-                } while (x !== startX || y !== startY);
-
-                // Simplificar pontos
-                const simplifiedPoints = simplifyPoints(points, detail);
-                return simplifiedPoints.length > 2 ? `M${simplifiedPoints.map(p => `${p.x},${p.y}`).join(' L')} Z` : '';
-            }
-
-            if (mode === 'silhouette') {
-                svg += `<rect x="0" y="0" width="${canvas.width}" height="${canvas.height}" fill="white"/>`;
-                for (let y = 0; y < canvas.height; y++) {
-                    for (let x = 0; x < canvas.width; x++) {
-                        const i = (y * canvas.width + x) * 4;
-                        if (!visited[y * canvas.width + x] && data[i + 3] > 0 && grayData[y * canvas.width + x] < 200) {
-                            const path = traceContour(x, y, 'rgb(0, 0, 0)');
-                            if (path) svg += `<path d="${path}" fill="black"/>`;
-                        }
-                    }
-                }
-            } else if (mode === 'flat' || mode === 'gradient') {
-                usedColors.forEach(color => {
-                    for (let y = 0; y < canvas.height; y++) {
-                        for (let x = 0; x < canvas.width; x++) {
-                            const i = (y * canvas.width + x) * 4;
-                            if (!visited[y * canvas.width + x] && data[i + 3] > 0) {
-                                const pixelColor = `rgb(${data[i]}, ${data[i + 1]}, ${data[i + 2]})`;
-                                if (colorDistance(pixelColor, color) < tolerance) {
-                                    const path = traceContour(x, y, color);
-                                    if (path) svg += `<path d="${path}" fill="${color}"/>`;
-                                }
-                            }
-                        }
-                    }
-                });
-
-                if (mode === 'gradient' && usedColors.length > 1) {
-                    svg += `<defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:${usedColors[0]}"/><stop offset="100%" style="stop-color:${usedColors[1]}"/></linearGradient></defs>`;
-                    svg += `<rect x="0" y="0" width="${canvas.width}" height="${canvas.height}" fill="url(#grad)"/>`;
-                }
-            }
-            svg += `</svg>`;
-            return svg;
-        }
-
-        // Simplificar pontos (algoritmo básico de redução)
-        function simplifyPoints(points, detail) {
-            if (points.length <= 2) return points;
-            const simplified = [points[0]];
-            const step = Math.max(1, Math.floor(detail));
-            for (let i = step; i < points.length - step; i += step) {
-                simplified.push(points[i]);
-            }
-            simplified.push(points[points.length - 1]);
-            return simplified;
-        }
-
-        // Funções auxiliares
-        function parseRGB(color) {
-            const match = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/) || color.match(/#([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})/i);
-            if (match && match.length === 4) {
-                return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3])];
-            }
-            return [255, 255, 255];
-        }
-
-        function colorDistance(color1, color2) {
-            const [r1, g1, b1] = parseRGB(color1);
-            const [r2, g2, b2] = parseRGB(color2);
-            return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
-        }
-
-        function getDominantEdgeColor(imageData) {
-            const data = imageData.data;
-            const colorCount = {};
-            for (let i = 0; i < canvas.width * 4; i += 4) {
-                const key = `${data[i]},${data[i + 1]},${data[i + 2]}`;
-                colorCount[key] = (colorCount[key] || 0) + 1;
-            }
-            const dominant = Object.entries(colorCount).sort((a, b) => b[1] - a[1])[0];
-            return `rgb(${dominant[0]})`;
-        }
-
-        function getDominantColor(imageData) {
-            const data = imageData.data;
-            const colorCount = {};
-            for (let i = 0; i < data.length; i += 40) {
-                const key = `${data[i]},${data[i + 1]},${data[i + 2]}`;
-                colorCount[key] = (colorCount[key] || 0) + 1;
-            }
-            const dominant = Object.entries(colorCount).sort((a, b) => b[1] - a[1])[0];
-            return `rgb(${dominant[0]})`;
-        }
-
-        function saveToHistory() {
-            const dataUrl = canvas.toDataURL();
-            history.push(dataUrl);
-        }
-
-        function undoAction() {
-            if (history.length === 0) return;
-            const lastState = history.pop();
-            const img = new Image();
-            img.src = lastState;
-            img.onload = () => {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.drawImage(img, 0, 0);
-                updatePreview();
-            };
-        }
-
-        function updatePreview() {
-            previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-            previewCtx.drawImage(canvas, 0, 0, previewCanvas.width, previewCanvas.height);
-        }
-
-        function downloadSVG() {
-            if (!document.vectorSvgUrl) {
-                alert("Vetorize a imagem primeiro!");
-                return;
-            }
-            const link = document.createElement('a');
-            link.href = document.vectorSvgUrl;
-            link.download = 'imagem_vetorizada.svg';
-            link.click();
-        }
-
-        function downloadPNG() {
-            if (!isImageLoaded) {
-                alert("Carregue uma imagem primeiro!");
-                return;
-            }
-            const link = document.createElement('a');
-            link.href = canvas.toDataURL('image/png');
-            link.download = 'imagem_vetorizada.png';
-            link.click();
-        }
-    </script>
-</body>
-</html>
+// Atualizar vectorizeImage para async
+async function vectorizeImage() {
+    if (!isImageLoaded) {
+        alert("Carregue uma imagem primeiro!");
+        return;
+    }
+    saveToHistory();
+    const mode = document.getElementById('vectorMode').value;
+    const detail = parseInt(document.getElementById('detailLevel').value);
+    const svg = await generateSVG(mode, detail);
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    document.vectorSvgUrl = url;
+    const img = new Image();
+    img.src = url;
+    img.onload = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        updatePreview();
+    };
+}
